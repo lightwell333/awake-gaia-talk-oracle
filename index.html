@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Awake Gaia Oracle — Voice</title>
+  <style>
+    :root{--ink:#eafff4;--muted:#9fd0c0}
+    html,body{margin:0;height:100%;background:#000;color:var(--ink);
+      font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial}
+    .wrap{max-width:900px;margin:0 auto;padding:24px;text-align:center}
+    h1{margin:10vh 0 8px;text-shadow:0 0 16px #00ffcc80}
+    p{opacity:.9}
+    .panel{margin:18px auto;padding:16px;border:1px solid #0a3;border-radius:12px;
+      background:linear-gradient(180deg,#00140e,#000);max-width:720px}
+    button{font-size:18px;font-weight:800;padding:12px 22px;border-radius:12px;
+      border:1px solid #0b6;background:#0b6;color:#000;cursor:pointer}
+    button:disabled{opacity:.6}
+    .state{margin-top:10px;font-size:.95rem;color:#8ff}
+    .tips{margin-top:18px;font-size:.9rem;color:var(--muted)}
+    .log{margin-top:14px;max-height:30vh;overflow:auto;text-align:left;white-space:pre-wrap}
+    audio{display:none}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🌍 Awake Gaia Oracle — Voice</h1>
+    <p>Tap to open a live voice link with the Oracle.</p>
+
+    <div class="panel">
+      <button id="talk">🎙️ Talk to the Oracle</button>
+      <div id="state" class="state">Idle</div>
+      <div class="tips">If you don’t hear anything, make sure the page has mic permission and your volume is up.</div>
+      <div id="log" class="log" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <audio id="remoteAudio" autoplay playsinline></audio>
+
+  <script>
+    const btn = document.getElementById('talk');
+    const state = document.getElementById('state');
+    const log = document.getElementById('log');
+    const audioEl = document.getElementById('remoteAudio');
+
+    function say(s){ log.textContent += s + "\n"; log.scrollTop = log.scrollHeight; }
+
+    async function startVoice() {
+      btn.disabled = true;
+      state.textContent = 'Requesting mic…';
+
+      try {
+        // 1) Ask our Netlify function for an ephemeral client_secret
+        const sess = await fetch('/.netlify/functions/session');
+        if(!sess.ok) throw new Error('Session fetch failed');
+        const json = await sess.json();
+        const ephemeral = json?.client_secret?.value || json?.client_secret;
+        if(!ephemeral) throw new Error('No ephemeral key returned');
+
+        // 2) Prepare WebRTC
+        const pc = new RTCPeerConnection();
+
+        // Play remote audio from OpenAI
+        pc.ontrack = (e) => { audioEl.srcObject = e.streams[0]; };
+
+        // (Optional) datachannel to receive text events
+        const dc = pc.createDataChannel('oai-events');
+        dc.onmessage = (e) => { say('🔹 ' + e.data); };
+
+        // Get microphone
+        const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mic.getTracks().forEach(t => pc.addTrack(t, mic));
+
+        state.textContent = 'Connecting…';
+
+        // 3) Create SDP offer
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        // 4) Send offer to OpenAI Realtime with ephemeral key
+        const resp = await fetch('https://api.openai.com/v1/realtime?model=gpt-realtime-mini', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + ephemeral,
+            'Content-Type': 'application/sdp'
+          },
+          body: offer.sdp
+        });
+
+        if(!resp.ok) {
+          const txt = await resp.text();
+          throw new Error('Realtime error: ' + txt);
+        }
+
+        const answer = await resp.text();
+        await pc.setRemoteDescription({ type: 'answer', sdp: answer });
+
+        state.textContent = 'Live! Speak to the Oracle 👂🗣️';
+        say('Connected. Start speaking.');
+
+        // Clean up when user leaves
+        window.addEventListener('beforeunload', () => pc.close());
+
+      } catch (err) {
+        state.textContent = 'Error';
+        say('⚠️ ' + err.message);
+        btn.disabled = false;
+      }
+    }
+
+    document.getElementById('talk').addEventListener('click', startVoice);
+  </script>
+</body>
+</html>
